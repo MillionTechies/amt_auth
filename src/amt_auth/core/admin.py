@@ -7,6 +7,8 @@ import httpx
 from amt_auth.core.config import AMTConfig
 from amt_auth.exceptions import AdminAPIError
 
+_PAGE_SIZE = 100
+
 
 class AdminClient:
     """Wraps the Keycloak Admin REST API.
@@ -81,40 +83,57 @@ class AdminClient:
     # Public API
     # ------------------------------------------------------------------
 
+    def _get_all(self, path: str) -> list[dict]:
+        """Fetch every page of a list endpoint."""
+        items: list[dict] = []
+        while True:
+            page = self._get(path, params={"first": len(items), "max": _PAGE_SIZE}).json()
+            items += page
+            if len(page) < _PAGE_SIZE:
+                return items
+
     def get_organization(self, org_id: str) -> dict:
         return self._get(f"/organizations/{org_id}").json()
 
-    def list_organizations(self, first: int = 0, max: int = 100) -> list[dict]:
-        return self._get("/organizations", params={"first": first, "max": max}).json()
+    def list_organizations(self) -> list[dict]:
+        return self._get_all("/organizations")
 
-    def list_org_members(
-        self, org_id: str, first: int = 0, max: int = 100
-    ) -> list[dict]:
-        return self._get(
-            f"/organizations/{org_id}/members",
-            params={"first": first, "max": max},
-        ).json()
+    def list_org_members(self, org_id: str) -> list[dict]:
+        return self._get_all(f"/organizations/{org_id}/members")
 
     def list_org_groups(self, org_id: str) -> list[dict]:
-        # Keycloak 26 org group path — verify exact endpoint in Phase D
-        return self._get(f"/organizations/{org_id}/groups").json()
+        """Top-level groups only; use `list_org_group_children` to walk down."""
+        return self._get_all(f"/organizations/{org_id}/groups")
 
-    def get_org_group(self, org_id: str, group_id: str) -> dict:
-        return self._get(f"/organizations/{org_id}/groups/{group_id}").json()
+    def list_org_group_children(self, org_id: str, group_id: str) -> list[dict]:
+        return self._get_all(f"/organizations/{org_id}/groups/{group_id}/children")
+
+    def list_org_group_members(self, org_id: str, group_id: str) -> list[dict]:
+        return self._get_all(f"/organizations/{org_id}/groups/{group_id}/members")
 
     def get_user(self, user_id: str) -> dict:
         return self._get(f"/users/{user_id}").json()
 
     # ------------------------------------------------------------------
-    # Onboarding — exact request shapes to be verified in Phase D
+    # Onboarding
     # ------------------------------------------------------------------
 
-    def create_organization(self, name: str, domains: list[str] | None = None) -> str:
-        """Create an organization and return its Keycloak ID."""
+    def create_organization(
+        self, name: str, alias: str, domains: list[str] | None = None
+    ) -> str:
+        """Create an organization and return its Keycloak ID.
+
+        `alias` is the URL-safe key the token uses for the organization; it
+        cannot contain spaces and cannot be changed later.
+        """
         response = self._request(
             "POST",
             "/organizations",
-            json={"name": name, "domains": [{"name": d} for d in domains or []]},
+            json={
+                "name": name,
+                "alias": alias,
+                "domains": [{"name": d} for d in domains or []],
+            },
         )
         return response.headers["Location"].rstrip("/").rsplit("/", 1)[-1]
 

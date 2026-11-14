@@ -37,3 +37,10 @@ coverage.xml
 # OS
 .DS_Store
 Thumbs.db
+
+# Frontend and backend
+db.sqlite3
+node_modules/
+
+# Local Keycloak + Java for development
+.keycloak/

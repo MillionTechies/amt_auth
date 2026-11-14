@@ -4,6 +4,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Protocol, runtime_checkable
 
+from amt_auth.core.admin import AdminClient
 from amt_auth.exceptions import SyncError
 
 logger = logging.getLogger(__name__)
@@ -11,136 +12,118 @@ logger = logging.getLogger(__name__)
 
 @runtime_checkable
 class MirrorRepository(Protocol):
-    def upsert_organization(self, id: str, name: str, synced_at: datetime) -> None: ...
+    def upsert_organization(
+        self, id: str, name: str, alias: str, synced_at: datetime
+    ) -> None: ...
     def soft_delete_organization(self, id: str, synced_at: datetime) -> None: ...
     def upsert_group(
-        self,
-        id: str,
-        name: str,
-        organization_id: str,
-        parent_id: str | None,
-        synced_at: datetime,
+        self, id: str, name: str, path: str, organization_id: str, synced_at: datetime
     ) -> None: ...
-    def soft_delete_group(self, id: str, synced_at: datetime) -> None: ...
     def upsert_membership(
         self,
         user_sub: str,
         organization_id: str,
         group_id: str | None,
-        roles: list[str],
         synced_at: datetime,
     ) -> None: ...
-    def soft_delete_membership(
-        self,
-        user_sub: str,
-        organization_id: str,
-        group_id: str | None,
-        synced_at: datetime,
-    ) -> None: ...
+    def soft_delete_stale(self, organization_id: str, synced_at: datetime) -> None:
+        """Soft-delete the organization's groups and memberships not synced at `synced_at`."""
+        ...
+    def soft_delete_stale_organizations(self, synced_at: datetime) -> None:
+        """Soft-delete every organization not synced at `synced_at`."""
+        ...
     def soft_delete_memberships_by_sub(
         self, user_sub: str, synced_at: datetime
     ) -> None: ...
 
 
-# ---------------------------------------------------------------------------
-# Handlers — one per supported event type
-# ---------------------------------------------------------------------------
+def _now() -> datetime:
+    return datetime.now(tz=timezone.utc)
 
-def _require(event: dict, *keys: str) -> None:
-    """Raise SyncError if any key is missing from event['representation']."""
-    r = event.get("representation", {})
-    missing = [k for k in keys if k not in r]
-    if missing:
-        raise SyncError(
-            f"Event {event.get('type')!r} missing representation keys: {missing}"
+
+def sync_organization(
+    organization_id: str,
+    admin: AdminClient,
+    repo: MirrorRepository,
+    synced_at: datetime | None = None,
+) -> None:
+    """Make the mirror match Keycloak for one organization.
+
+    Reads the organization, its groups and its members from the Admin API,
+    upserts them, then soft-deletes whatever Keycloak no longer has.
+    Callers are responsible for transaction management.
+    """
+    synced_at = synced_at or _now()
+    org = admin.get_organization(organization_id)
+    repo.upsert_organization(
+        id=org["id"], name=org["name"], alias=org["alias"], synced_at=synced_at
+    )
+    for member in admin.list_org_members(organization_id):
+        repo.upsert_membership(
+            user_sub=member["id"],
+            organization_id=organization_id,
+            group_id=None,
+            synced_at=synced_at,
         )
 
+    pending = admin.list_org_groups(organization_id)
+    while pending:
+        group = pending.pop()
+        repo.upsert_group(
+            id=group["id"],
+            name=group["name"],
+            path=group["path"],
+            organization_id=organization_id,
+            synced_at=synced_at,
+        )
+        for member in admin.list_org_group_members(organization_id, group["id"]):
+            repo.upsert_membership(
+                user_sub=member["id"],
+                organization_id=organization_id,
+                group_id=group["id"],
+                synced_at=synced_at,
+            )
+        pending += admin.list_org_group_children(organization_id, group["id"])
 
-def _handle_org_upsert(event: dict, repo: MirrorRepository, synced_at: datetime) -> None:
-    _require(event, "id", "name")
-    r = event["representation"]
-    repo.upsert_organization(id=r["id"], name=r["name"], synced_at=synced_at)
-
-
-def _handle_org_delete(event: dict, repo: MirrorRepository, synced_at: datetime) -> None:
-    _require(event, "id")
-    r = event["representation"]
-    repo.soft_delete_organization(id=r["id"], synced_at=synced_at)
-
-
-def _handle_group_upsert(event: dict, repo: MirrorRepository, synced_at: datetime) -> None:
-    _require(event, "id", "name", "organizationId")
-    r = event["representation"]
-    repo.upsert_group(
-        id=r["id"],
-        name=r["name"],
-        organization_id=r["organizationId"],
-        parent_id=r.get("parentId"),
-        synced_at=synced_at,
-    )
+    repo.soft_delete_stale(organization_id, synced_at)
 
 
-def _handle_group_delete(event: dict, repo: MirrorRepository, synced_at: datetime) -> None:
-    _require(event, "id")
-    r = event["representation"]
-    repo.soft_delete_group(id=r["id"], synced_at=synced_at)
+def sync_all(admin: AdminClient, repo: MirrorRepository) -> int:
+    """Make the whole mirror match Keycloak. Returns the number of organizations."""
+    synced_at = _now()
+    organizations = admin.list_organizations()
+    for org in organizations:
+        sync_organization(org["id"], admin, repo, synced_at)
+    repo.soft_delete_stale_organizations(synced_at)
+    return len(organizations)
 
 
-def _handle_membership_add(event: dict, repo: MirrorRepository, synced_at: datetime) -> None:
-    _require(event, "userId", "organizationId")
-    r = event["representation"]
-    repo.upsert_membership(
-        user_sub=r["userId"],
-        organization_id=r["organizationId"],
-        group_id=r.get("groupId"),
-        roles=r.get("roles", []),
-        synced_at=synced_at,
-    )
+def consume_event(event: dict, admin: AdminClient, repo: MirrorRepository) -> None:
+    """Apply one Keycloak admin event to the mirror.
 
+    `event` is Keycloak's own admin event: `operationType`, `resourceType`
+    and `resourcePath`. The events do not carry enough to update the mirror
+    directly (a membership event does not name the user), so any change to an
+    organization re-syncs that organization from the Admin API.
 
-def _handle_membership_remove(event: dict, repo: MirrorRepository, synced_at: datetime) -> None:
-    _require(event, "userId", "organizationId")
-    r = event["representation"]
-    repo.soft_delete_membership(
-        user_sub=r["userId"],
-        organization_id=r["organizationId"],
-        group_id=r.get("groupId"),
-        synced_at=synced_at,
-    )
-
-
-def _handle_user_deleted(event: dict, repo: MirrorRepository, synced_at: datetime) -> None:
-    _require(event, "userId")
-    r = event["representation"]
-    repo.soft_delete_memberships_by_sub(user_sub=r["userId"], synced_at=synced_at)
-
-
-_REGISTRY: dict[str, object] = {
-    "ORG_CREATED": _handle_org_upsert,
-    "ORG_UPDATED": _handle_org_upsert,
-    "ORG_DELETED": _handle_org_delete,
-    "ORG_GROUP_CREATED": _handle_group_upsert,
-    "ORG_GROUP_UPDATED": _handle_group_upsert,
-    "ORG_GROUP_DELETED": _handle_group_delete,
-    "ORG_MEMBERSHIP_ADDED": _handle_membership_add,
-    "ORG_MEMBERSHIP_REMOVED": _handle_membership_remove,
-    "USER_DELETED": _handle_user_deleted,
-}
-
-
-def consume_event(event: dict, repo: MirrorRepository) -> None:
-    """Process one webhook event and write through to the mirror repository.
-
-    - Unknown event types are logged and silently skipped.
-    - Malformed payloads (missing required keys) raise SyncError.
-    - Callers are responsible for transaction management.
-    - This function is idempotent: all writes are upserts or soft-deletes.
+    - Events about anything else are logged and skipped.
+    - Malformed events raise SyncError.
     """
-    event_type = event.get("type", "")
-    handler = _REGISTRY.get(event_type)
-    if handler is None:
-        logger.warning("amt-auth sync: unknown event type %r — skipping", event_type)
-        return
+    operation = event.get("operationType", "")
+    resource_type = event.get("resourceType", "")
+    parts = str(event.get("resourcePath", "")).split("/")
+    synced_at = _now()
 
-    synced_at = datetime.now(tz=timezone.utc)
-    handler(event, repo, synced_at)  # type: ignore[call-arg]
+    if resource_type == "USER" and operation == "DELETE":
+        if len(parts) < 2 or parts[0] != "users":
+            raise SyncError(f"Unexpected resourcePath for USER event: {parts}")
+        repo.soft_delete_memberships_by_sub(user_sub=parts[1], synced_at=synced_at)
+    elif resource_type.startswith("ORGANIZATION"):
+        if len(parts) < 2 or parts[0] != "organizations":
+            raise SyncError(f"Unexpected resourcePath for {resource_type} event: {parts}")
+        if resource_type == "ORGANIZATION" and operation == "DELETE":
+            repo.soft_delete_organization(id=parts[1], synced_at=synced_at)
+        else:
+            sync_organization(parts[1], admin, repo, synced_at)
+    else:
+        logger.info("amt-auth sync: ignoring %s %s event", operation, resource_type)

@@ -1,0 +1,29 @@
+:root {
+  font-family: system-ui, sans-serif;
+  line-height: 1.5;
+  color-scheme: light dark;
+}
+
+main {
+  max-width: 40rem;
+  margin: 0 auto;
+  padding: 2rem 1rem;
+}
+
+section {
+  border: 1px solid color-mix(in srgb, currentColor 25%, transparent);
+  border-radius: 0.5rem;
+  padding: 0 1rem 1rem;
+  margin-bottom: 1rem;
+}
+
+input,
+button {
+  font: inherit;
+  padding: 0.4rem 0.75rem;
+  margin-right: 0.5rem;
+}
+
+.error {
+  color: crimson;
+}

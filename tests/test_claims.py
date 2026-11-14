@@ -11,8 +11,8 @@ BASE_PAYLOAD = {
     "realm_access": {"roles": ["user", "network_admin"]},
     "resource_access": {"my-client": {"roles": ["read"]}},
     "organization": {
-        "org-a": {"name": "JKUAT", "roles": ["member"]},
-        "org-b": {"name": "UoNBI", "roles": ["admin", "member"]},
+        "jkuat": {"id": "org-a", "groups": ["/clubs/Robotics Club", "/mentorships/Web Dev"]},
+        "uonbi": {"id": "org-b", "groups": ["/admins"]},
     },
 }
 
@@ -44,12 +44,13 @@ def test_absent_organization_key():
 def test_one_org_active_organization():
     payload = {
         **BASE_PAYLOAD,
-        "organization": {"org-a": {"name": "JKUAT", "roles": ["member"]}},
+        "organization": {"jkuat": {"id": "org-a"}},
     }
     claims = TokenClaims.from_decoded(payload, "my-client")
     assert claims.active_organization is not None
     assert claims.active_organization.id == "org-a"
-    assert claims.active_organization.name == "JKUAT"
+    assert claims.active_organization.alias == "jkuat"
+    assert claims.active_organization.groups == ()
 
 
 def test_two_orgs_active_is_first_in_insertion_order():
@@ -58,11 +59,27 @@ def test_two_orgs_active_is_first_in_insertion_order():
     assert claims.active_organization.id == "org-a"
 
 
-def test_membership_roles_parsed():
+def test_groups_parsed_with_kind():
     claims = TokenClaims.from_decoded(BASE_PAYLOAD, "my-client")
-    uni_b = next(m for m in claims.memberships if m.id == "org-b")
-    assert "admin" in uni_b.roles
-    assert "member" in uni_b.roles
+    robotics, web_dev = claims.memberships[0].groups
+    assert (robotics.name, robotics.kind) == ("Robotics Club", "clubs")
+    assert (web_dev.name, web_dev.kind) == ("Web Dev", "mentorships")
+    assert robotics.organization_id == "org-a"
+
+
+def test_admins_group_makes_org_admin():
+    claims = TokenClaims.from_decoded(BASE_PAYLOAD, "my-client")
+    jkuat, uonbi = claims.memberships
+    assert not jkuat.is_admin
+    assert uonbi.is_admin
+    assert uonbi.groups[0].kind is None  # top-level group
+
+
+@pytest.mark.parametrize("claim", [["jkuat"], {"jkuat": {}}, {"jkuat": "x"}])
+def test_organization_claim_without_ids_is_rejected(claim):
+    """Keycloak's default claim is a bare list of aliases; we need the IDs."""
+    with pytest.raises(InvalidTokenError, match="Add organization id"):
+        TokenClaims.from_decoded({**BASE_PAYLOAD, "organization": claim}, "my-client")
 
 
 def test_realm_roles():

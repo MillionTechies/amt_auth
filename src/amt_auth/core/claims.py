@@ -2,20 +2,36 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+ADMINS_GROUP = "/admins"  # members of this group administer the organization
+
 
 @dataclass(frozen=True)
 class GroupRef:
-    id: str
-    name: str
+    """A group inside an organization, as the token names it: by path."""
+
+    path: str  # e.g. "/clubs/Robotics Club"
     organization_id: str
+
+    @property
+    def name(self) -> str:
+        return self.path.rsplit("/", 1)[-1]
+
+    @property
+    def kind(self) -> str | None:
+        """The top-level group it sits under, e.g. "clubs"; None if top-level itself."""
+        parts = self.path.strip("/").split("/")
+        return parts[0] if len(parts) > 1 else None
 
 
 @dataclass(frozen=True)
 class OrgMembership:
     id: str
-    name: str
-    roles: tuple[str, ...]
+    alias: str
     groups: tuple[GroupRef, ...]
+
+    @property
+    def is_admin(self) -> bool:
+        return any(g.path == ADMINS_GROUP for g in self.groups)
 
 
 @dataclass(frozen=True)
@@ -46,16 +62,27 @@ class TokenClaims:
             payload.get("resource_access", {}).get(client_id, {}).get("roles", [])
         )
 
-        # organization claim: {"<org_id>": {"name": "...", "roles": [...]}}
-        org_map: dict = payload.get("organization", {})
+        # Keycloak's organization claim, with "Add organization id" enabled and the
+        # organization group mapper added:
+        #   {"<alias>": {"id": "<org id>", "groups": ["/clubs/Robotics Club"]}}
+        org_claim = payload.get("organization") or {}
+        if not isinstance(org_claim, dict) or not all(
+            isinstance(attrs, dict) and attrs.get("id") for attrs in org_claim.values()
+        ):
+            raise InvalidTokenError(
+                "Token 'organization' claim carries no organization IDs. Enable "
+                "'Add organization id' on the realm's organization mapper."
+            )
         memberships = tuple(
             OrgMembership(
-                id=org_id,
-                name=attrs.get("name", ""),
-                roles=tuple(attrs.get("roles", [])),
-                groups=(),  # org groups are not present in the base token
+                id=attrs["id"],
+                alias=alias,
+                groups=tuple(
+                    GroupRef(path=path, organization_id=attrs["id"])
+                    for path in attrs.get("groups", [])
+                ),
             )
-            for org_id, attrs in org_map.items()
+            for alias, attrs in org_claim.items()
         )
 
         return cls(

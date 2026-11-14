@@ -55,3 +55,24 @@ jobs:
 
       - name: Run tests
         run: pytest -v --cov=src/amt_auth --cov-report=term-missing
+
+  frontend:
+    name: Frontend build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint and build
+        run: npm run lint && npm run build

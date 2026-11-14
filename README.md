@@ -67,59 +67,77 @@ class TokenClaims:
 ```python
 @dataclass(frozen=True)
 class OrgMembership:
-    id: str
-    name: str
-    roles: list[str]
-    groups: list[GroupRef]
+    id: str                       # Keycloak organization ID
+    alias: str                    # URL-safe key, e.g. "jkuat"
+    groups: tuple[GroupRef, ...]
+    is_admin: bool                # property: member of the "/admins" group
 
 @dataclass(frozen=True)
 class GroupRef:
-    id: str
-    name: str
+    path: str                     # "/clubs/Robotics Club"
     organization_id: str
+    name: str                     # property: "Robotics Club"
+    kind: str | None              # property: "clubs"; None for a top-level group
 ```
 
-Organization data comes from the `organization` JWT claim that Keycloak injects when the Organizations feature is enabled.
+Clubs and mentorships are both groups inside an organization. Each organization has top-level groups (`clubs`, `mentorships`, `admins`) and the real clubs and mentorships sit underneath, so a group's kind is the top-level group it belongs to. Keycloak has no per-organization roles; an organization's admins are the members of its `/admins` group.
+
+### What the realm must provide
+
+The library reads Keycloak's `organization` claim in this shape:
+
+```json
+{"organization": {"jkuat": {"id": "f355e756-...", "groups": ["/clubs/Robotics Club", "/admins"]}}}
+```
+
+Keycloak does not produce that by default. On the realm's `organization` client scope:
+
+- turn on **Add organization id** on the organization membership mapper (the default claim is a bare list of aliases, which the library rejects with `InvalidTokenError`)
+- add an **Organization Group Membership** mapper
+
+Clients must request the `organization` scope, and the token's `aud` must include `AMT_CLIENT_ID` (an audience mapper on the frontend's client). `scripts/keycloak-dev-setup.sh` does all of this for a local realm.
 
 ## Admin API
 
-`AdminClient` wraps the Keycloak Admin REST API with automatic client-credentials token caching and a single 401-retry:
+`AdminClient` wraps the Keycloak Admin REST API with automatic client-credentials token caching and a single 401-retry. List methods follow pagination and return every item.
 
 ```python
 from amt_auth.core.admin import AdminClient
 
 admin = AdminClient(config)
 
-org = admin.get_organization("b3f1a2c4-...")
-members = admin.list_org_members("b3f1a2c4-...")
-groups = admin.list_org_groups("b3f1a2c4-...")
-user = admin.get_user("user-sub-123")
+admin.list_organizations()
+admin.get_organization(org_id)
+admin.list_org_members(org_id)
+admin.list_org_groups(org_id)                    # top-level groups
+admin.list_org_group_children(org_id, group_id)
+admin.list_org_group_members(org_id, group_id)
+admin.get_user(user_id)
+
+admin.create_organization("University of Nairobi", alias="uon")   # returns the new ID
+admin.add_org_member(org_id, user_id)
+admin.invite_org_member(org_id, "bob@example.com")   # needs SMTP configured on the realm
 ```
 
 Non-2xx responses raise `AdminAPIError(status_code, body)`.
 
-## Event sync
+The client's service account needs the `kc-admin-api` client scope (without it Keycloak answers 401) and these `realm-management` roles: `manage-organizations`, `view-organizations`, `manage-users`, `view-users`, `query-users`, `query-groups`.
 
-`consume_event` processes webhook events from Keycloak and writes through to a `MirrorRepository` — an interface your Django models implement:
+## Mirror sync
+
+Products that need to query organizations, groups and memberships keep a local mirror. The library fills it from the Admin API through a `MirrorRepository`, an interface your storage implements (the Django integration ships one):
 
 ```python
-from amt_auth import MirrorRepository, consume_event
+from amt_auth.core.sync import consume_event, sync_all, sync_organization
 
-class MyDjangoRepo:
-    def upsert_organization(self, id, name, synced_at): ...
-    def soft_delete_organization(self, id, synced_at): ...
-    def upsert_group(self, id, name, organization_id, parent_id, synced_at): ...
-    def soft_delete_group(self, id, synced_at): ...
-    def upsert_membership(self, user_sub, organization_id, group_id, roles, synced_at): ...
-    def soft_delete_membership(self, user_sub, organization_id, group_id, synced_at): ...
-    def soft_delete_memberships_by_sub(self, user_sub, synced_at): ...
-
-consume_event(event_dict, MyDjangoRepo())
+sync_all(admin, repo)                    # make the whole mirror match Keycloak
+sync_organization(org_id, admin, repo)   # one organization
+consume_event(event, admin, repo)        # react to one Keycloak admin event
 ```
 
-Supported event types: `ORG_CREATED`, `ORG_UPDATED`, `ORG_DELETED`, `ORG_GROUP_CREATED`, `ORG_GROUP_UPDATED`, `ORG_GROUP_DELETED`, `ORG_MEMBERSHIP_ADDED`, `ORG_MEMBERSHIP_REMOVED`, `USER_DELETED`.
+A sync upserts everything Keycloak has, then soft-deletes whatever it no longer has.
 
-Unknown event types are logged and silently skipped. Malformed payloads raise `SyncError`.
+`consume_event` takes Keycloak's own admin event (`operationType`, `resourceType`, `resourcePath`). Keycloak's events do not carry enough to update the mirror directly (a membership event does not name the user), so any event about an organization re-syncs that organization. A deleted organization or user is soft-deleted, unrelated events are ignored, and malformed ones raise `SyncError`.
 
 ## Django integration
 
@@ -159,11 +177,13 @@ To receive Keycloak org events, mount the webhook:
 urlpatterns = [path("auth/", include("amt_auth.django.urls"))]
 ```
 
-`POST /auth/webhook/` requires the `X-AMT-Webhook-Secret` header to match `AMT_WEBHOOK_SECRET` and writes the event to the mirror tables through `DjangoMirrorRepository`.
+`POST /auth/webhook/` requires the `X-AMT-Webhook-Secret` header to match `AMT_WEBHOOK_SECRET` and re-syncs the organization the event touches. Keycloak has no built-in webhooks, so delivering events needs an event-listener extension; without one, run the full sync on a schedule:
+
+```bash
+python manage.py amt_sync
+```
 
 ### Group kinds
-
-Clubs and mentorships are both groups inside an organization. Each organization has top-level groups (`clubs`, `mentorships`) and the real ones sit underneath, so a group's kind is its parent's name:
 
 ```python
 Group.objects.get(id="...").kind   # "clubs", "mentorships", or None for a top-level group
@@ -175,10 +195,10 @@ Admins set up organizations and bring users in through two endpoints. Both call 
 
 | Endpoint | Who | Body |
 |---|---|---|
-| `POST /auth/organizations/` | realm role `admin` | `{"name": "...", "domains": ["..."]}` (domains optional) |
-| `POST /auth/organizations/<id>/invitations/` | that organization's `admin`, or realm `admin` | `{"email": "...", "first_name": "...", "last_name": "..."}` (names optional) |
+| `POST /auth/organizations/` | realm role `admin` | `{"name": "...", "alias": "...", "domains": ["..."]}` (alias defaults to a slug of the name; domains optional) |
+| `POST /auth/organizations/<id>/invitations/` | a member of that organization's `/admins` group, or realm `admin` | `{"email": "...", "first_name": "...", "last_name": "..."}` (names optional) |
 
-An invitation makes Keycloak email the user a link to register and join the organization.
+An invitation makes Keycloak email the user a link to register and join the organization, so the realm needs SMTP configured.
 
 ## Exceptions
 
@@ -216,9 +236,13 @@ act push
 act push --matrix python-version:3.12 --pull=false
 ```
 
+## Frontend
+
+`frontend/` is the Vite + React app that signs in with Keycloak, and `backend/` is the small Django project it talks to, which mounts `amt_auth.django`. See [frontend/README.md](frontend/README.md).
+
 ## CI
 
-GitHub Actions runs tests against **Python 3.11 and 3.12** on every push and pull request to `main`, `develop` and `release/*`.
+GitHub Actions runs tests against **Python 3.11 and 3.12** on every push and pull request to `main`, `develop` and `release/*`. The frontend is linted and built in the same run.
 
 Two rules are enforced on pull requests:
 

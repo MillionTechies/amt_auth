@@ -12,7 +12,7 @@ from amt_auth.exceptions import AdminAPIError
 
 ORG = "org-jkuat-id"  # the organization in the default test token
 PLATFORM_ADMIN = {"realm_access": {"roles": ["admin"]}}
-ORG_ADMIN = {"organization": {ORG: {"name": "JKUAT", "roles": ["admin"]}}}
+ORG_ADMIN = {"organization": {"jkuat": {"id": ORG, "groups": ["/admins"]}}}
 
 
 @pytest.fixture()
@@ -36,12 +36,26 @@ def _post(path, body, token):
 def test_platform_admin_creates_organization(admin, make_jwt):
     response = _post(
         "/auth/organizations/",
-        {"name": "UoN", "domains": ["uonbi.ac.ke"]},
+        {"name": "University of Nairobi", "domains": ["uonbi.ac.ke"]},
         make_jwt(PLATFORM_ADMIN),
     )
     assert response.status_code == 201
-    assert response.json() == {"id": "org-new", "name": "UoN"}
-    admin.create_organization.assert_called_once_with(name="UoN", domains=["uonbi.ac.ke"])
+    assert response.json() == {
+        "id": "org-new",
+        "name": "University of Nairobi",
+        "alias": "university-of-nairobi",
+    }
+    admin.create_organization.assert_called_once_with(
+        name="University of Nairobi", alias="university-of-nairobi", domains=["uonbi.ac.ke"]
+    )
+
+
+def test_create_organization_accepts_explicit_alias(admin, make_jwt):
+    response = _post(
+        "/auth/organizations/", {"name": "UoN", "alias": "uon"}, make_jwt(PLATFORM_ADMIN)
+    )
+    assert response.status_code == 201
+    assert admin.create_organization.call_args.kwargs["alias"] == "uon"
 
 
 def test_ordinary_user_cannot_create_organization(admin, make_jwt):

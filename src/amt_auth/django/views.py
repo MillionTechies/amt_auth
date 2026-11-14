@@ -4,6 +4,7 @@ import hmac
 
 from django.conf import settings
 from django.db import transaction
+from django.utils.text import slugify
 from rest_framework import serializers
 from rest_framework.exceptions import APIException, PermissionDenied, ValidationError
 from rest_framework.response import Response
@@ -19,7 +20,7 @@ WEBHOOK_SECRET_HEADER = "X-AMT-Webhook-Secret"
 
 
 class KeycloakWebhookView(APIView):
-    """Receives Keycloak org events and writes them to the mirror tables.
+    """Receives Keycloak admin events and re-syncs the organization they touch.
 
     The caller must send `settings.AMT_WEBHOOK_SECRET` in the
     `X-AMT-Webhook-Secret` header.
@@ -37,9 +38,15 @@ class KeycloakWebhookView(APIView):
             raise ValidationError("Event must be a JSON object.")
         try:
             with transaction.atomic():
-                consume_event(request.data, DjangoMirrorRepository())
+                consume_event(
+                    request.data,
+                    authentication.get_auth_service().admin,
+                    DjangoMirrorRepository(),
+                )
         except SyncError as exc:
             raise ValidationError(str(exc)) from exc
+        except AdminAPIError as exc:
+            raise _keycloak_error(exc) from exc
         return Response(status=204)
 
 
@@ -60,6 +67,8 @@ def _keycloak_error(exc: AdminAPIError) -> APIException:
 
 class OrganizationSerializer(serializers.Serializer):
     name = serializers.CharField(max_length=255)
+    # The URL-safe key Keycloak uses for the organization; defaults to a slug of the name.
+    alias = serializers.SlugField(max_length=255, required=False)
     domains = serializers.ListField(
         child=serializers.CharField(), required=False, default=list
     )
@@ -79,12 +88,14 @@ class OrganizationCreateView(APIView):
     def post(self, request):
         data = OrganizationSerializer(data=request.data)
         data.is_valid(raise_exception=True)
+        org = data.validated_data
+        org.setdefault("alias", slugify(org["name"]))
         admin = authentication.get_auth_service().admin
         try:
-            org_id = admin.create_organization(**data.validated_data)
+            org_id = admin.create_organization(**org)
         except AdminAPIError as exc:
             raise _keycloak_error(exc) from exc
-        return Response({"id": org_id, "name": data.validated_data["name"]}, status=201)
+        return Response({"id": org_id, "name": org["name"], "alias": org["alias"]}, status=201)
 
 
 class OrganizationInviteView(APIView):

@@ -15,6 +15,7 @@ class Mirrored(models.Model):
 class Organization(Mirrored):
     id = models.CharField(primary_key=True, max_length=64)  # Keycloak org ID
     name = models.CharField(max_length=255)
+    alias = models.CharField(max_length=255, default="")  # the key the token uses
 
     def __str__(self) -> str:
         return self.name
@@ -24,26 +25,21 @@ class Group(Mirrored):
     """A group inside an organization.
 
     Each organization has top-level groups such as "clubs" and "mentorships";
-    the actual clubs and mentorships sit underneath, so the parent names the kind.
+    the actual clubs and mentorships sit underneath, so the path names the kind.
     """
 
     id = models.CharField(primary_key=True, max_length=64)  # Keycloak group ID
     name = models.CharField(max_length=255)
+    path = models.CharField(max_length=1024, default="")  # e.g. "/clubs/Robotics Club"
     organization = models.ForeignKey(
         Organization, on_delete=models.CASCADE, related_name="groups"
-    )
-    parent = models.ForeignKey(
-        "self",
-        on_delete=models.CASCADE,
-        related_name="children",
-        null=True,
-        blank=True,
     )
 
     @property
     def kind(self) -> str | None:
-        """Name of the parent group, e.g. "clubs"; None for a top-level group."""
-        return self.parent.name if self.parent_id else None
+        """The top-level group it sits under, e.g. "clubs"; None if top-level itself."""
+        parts = self.path.strip("/").split("/")
+        return parts[0] if len(parts) > 1 else None
 
     def __str__(self) -> str:
         return self.name
@@ -63,7 +59,6 @@ class Membership(Mirrored):
         null=True,
         blank=True,
     )
-    roles = models.JSONField(default=list)
 
     class Meta:
         constraints = [

@@ -1,176 +1,140 @@
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, call
 
 import pytest
 
-from amt_auth.core.sync import MirrorRepository, consume_event
+from amt_auth.core.admin import AdminClient
+from amt_auth.core.sync import MirrorRepository, consume_event, sync_all, sync_organization
 from amt_auth.exceptions import SyncError
 
+ORG = {"id": "org-1", "name": "JKUAT", "alias": "jkuat"}
+CLUBS = {"id": "g-clubs", "name": "clubs", "path": "/clubs"}
+ROBOTICS = {"id": "g-robo", "name": "Robotics Club", "path": "/clubs/Robotics Club"}
 
-def _repo() -> MagicMock:
+
+@pytest.fixture()
+def repo():
     return MagicMock(spec=MirrorRepository)
 
 
-def _event(type_: str, representation: dict) -> dict:
+@pytest.fixture()
+def admin():
+    """An AdminClient serving one organization: clubs > Robotics Club, member alice."""
+    admin = MagicMock(spec=AdminClient)
+    admin.list_organizations.return_value = [ORG]
+    admin.get_organization.return_value = ORG
+    admin.list_org_members.return_value = [{"id": "alice"}, {"id": "bob"}]
+    admin.list_org_groups.return_value = [CLUBS]
+    admin.list_org_group_children.side_effect = lambda org, group: (
+        [ROBOTICS] if group == "g-clubs" else []
+    )
+    admin.list_org_group_members.side_effect = lambda org, group: (
+        [{"id": "alice"}] if group == "g-robo" else []
+    )
+    return admin
+
+
+def _event(operation: str, resource_type: str, path: str) -> dict:
+    """Keycloak's own admin event shape."""
     return {
-        "type": type_,
         "realmId": "amilliontechies",
         "time": 1700000000000,
-        "representation": representation,
+        "operationType": operation,
+        "resourceType": resource_type,
+        "resourcePath": path,
     }
 
 
-# ---------------------------------------------------------------------------
-# Organization events
-# ---------------------------------------------------------------------------
+# --- sync_organization --------------------------------------------------------
 
-def test_org_created():
-    repo = _repo()
-    consume_event(_event("ORG_CREATED", {"id": "org-1", "name": "JKUAT"}), repo)
-    repo.upsert_organization.assert_called_once()
+
+def test_sync_organization_upserts_everything(admin, repo):
+    sync_organization("org-1", admin, repo)
+
     kw = repo.upsert_organization.call_args.kwargs
-    assert kw["id"] == "org-1"
-    assert kw["name"] == "JKUAT"
+    assert (kw["id"], kw["name"], kw["alias"]) == ("org-1", "JKUAT", "jkuat")
+
+    groups = {c.kwargs["id"]: c.kwargs["path"] for c in repo.upsert_group.call_args_list}
+    assert groups == {"g-clubs": "/clubs", "g-robo": "/clubs/Robotics Club"}
+
+    memberships = {
+        (c.kwargs["user_sub"], c.kwargs["group_id"])
+        for c in repo.upsert_membership.call_args_list
+    }
+    assert memberships == {("alice", None), ("bob", None), ("alice", "g-robo")}
 
 
-def test_org_updated():
-    repo = _repo()
-    consume_event(_event("ORG_UPDATED", {"id": "org-1", "name": "JKUAT Updated"}), repo)
-    repo.upsert_organization.assert_called_once()
-    kw = repo.upsert_organization.call_args.kwargs
-    assert kw["name"] == "JKUAT Updated"
+def test_sync_organization_uses_one_timestamp_and_sweeps_last(admin, repo):
+    sync_organization("org-1", admin, repo)
+
+    synced_at = repo.upsert_organization.call_args.kwargs["synced_at"]
+    stamps = {c.kwargs["synced_at"] for c in repo.upsert_group.call_args_list}
+    stamps |= {c.kwargs["synced_at"] for c in repo.upsert_membership.call_args_list}
+    assert stamps == {synced_at}
+    assert repo.method_calls[-1] == call.soft_delete_stale("org-1", synced_at)
 
 
-def test_org_deleted():
-    repo = _repo()
-    consume_event(_event("ORG_DELETED", {"id": "org-1"}), repo)
-    repo.soft_delete_organization.assert_called_once()
-    kw = repo.soft_delete_organization.call_args.kwargs
-    assert kw["id"] == "org-1"
-
-
-# ---------------------------------------------------------------------------
-# Org group events
-# ---------------------------------------------------------------------------
-
-def test_group_created():
-    repo = _repo()
-    consume_event(
-        _event("ORG_GROUP_CREATED", {"id": "g-1", "name": "Robotics", "organizationId": "org-1"}),
-        repo,
-    )
-    repo.upsert_group.assert_called_once()
-    kw = repo.upsert_group.call_args.kwargs
-    assert kw["id"] == "g-1"
-    assert kw["organization_id"] == "org-1"
-    assert kw["parent_id"] is None
-
-
-def test_group_created_with_parent():
-    repo = _repo()
-    consume_event(
-        _event(
-            "ORG_GROUP_CREATED",
-            {"id": "g-1", "name": "Robotics", "organizationId": "org-1", "parentId": "g-clubs"},
-        ),
-        repo,
-    )
-    assert repo.upsert_group.call_args.kwargs["parent_id"] == "g-clubs"
-
-
-def test_group_updated():
-    repo = _repo()
-    consume_event(
-        _event("ORG_GROUP_UPDATED", {"id": "g-1", "name": "Robotics v2", "organizationId": "org-1"}),
-        repo,
-    )
-    repo.upsert_group.assert_called_once()
-
-
-def test_group_deleted():
-    repo = _repo()
-    consume_event(_event("ORG_GROUP_DELETED", {"id": "g-1"}), repo)
-    repo.soft_delete_group.assert_called_once()
-    kw = repo.soft_delete_group.call_args.kwargs
-    assert kw["id"] == "g-1"
-
-
-# ---------------------------------------------------------------------------
-# Membership events
-# ---------------------------------------------------------------------------
-
-def test_membership_added():
-    repo = _repo()
-    consume_event(
-        _event("ORG_MEMBERSHIP_ADDED", {
-            "userId": "sub-alice",
-            "organizationId": "org-1",
-            "roles": ["member"],
-        }),
-        repo,
-    )
-    repo.upsert_membership.assert_called_once()
-    kw = repo.upsert_membership.call_args.kwargs
-    assert kw["user_sub"] == "sub-alice"
-    assert kw["organization_id"] == "org-1"
-    assert kw["roles"] == ["member"]
-
-
-def test_membership_removed():
-    repo = _repo()
-    consume_event(
-        _event("ORG_MEMBERSHIP_REMOVED", {"userId": "sub-alice", "organizationId": "org-1"}),
-        repo,
-    )
-    repo.soft_delete_membership.assert_called_once()
-    kw = repo.soft_delete_membership.call_args.kwargs
-    assert kw["user_sub"] == "sub-alice"
-
-
-def test_user_deleted():
-    repo = _repo()
-    consume_event(_event("USER_DELETED", {"userId": "sub-alice"}), repo)
-    repo.soft_delete_memberships_by_sub.assert_called_once()
-    kw = repo.soft_delete_memberships_by_sub.call_args.kwargs
-    assert kw["user_sub"] == "sub-alice"
-
-
-# ---------------------------------------------------------------------------
-# Edge cases
-# ---------------------------------------------------------------------------
-
-def test_unknown_event_type_skipped():
-    repo = _repo()
-    consume_event(_event("SOME_FUTURE_EVENT", {"id": "x"}), repo)
-    repo.upsert_organization.assert_not_called()
-    repo.soft_delete_organization.assert_not_called()
-    repo.upsert_group.assert_not_called()
-    repo.upsert_membership.assert_not_called()
-
-
-def test_idempotent_double_upsert():
-    repo = _repo()
-    evt = _event("ORG_CREATED", {"id": "org-1", "name": "JKUAT"})
-    consume_event(evt, repo)
-    consume_event(evt, repo)
+def test_sync_all_syncs_each_org_then_sweeps_organizations(admin, repo):
+    admin.list_organizations.return_value = [ORG, {**ORG, "id": "org-2"}]
+    assert sync_all(admin, repo) == 2
     assert repo.upsert_organization.call_count == 2
+    assert repo.method_calls[-1][0] == "soft_delete_stale_organizations"
 
 
-def test_malformed_payload_raises():
-    repo = _repo()
-    evt = _event("ORG_CREATED", {})  # missing "id" and "name"
+# --- consume_event --------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "operation, resource_type, path",
+    [
+        ("CREATE", "ORGANIZATION", "organizations/org-1"),
+        ("UPDATE", "ORGANIZATION", "organizations/org-1"),
+        ("CREATE", "ORGANIZATION_GROUP", "organizations/org-1/groups/g-clubs/children"),
+        ("DELETE", "ORGANIZATION_GROUP", "organizations/org-1/groups/g-robo"),
+        ("CREATE", "ORGANIZATION_MEMBERSHIP", "organizations/org-1/members"),
+        ("DELETE", "ORGANIZATION_MEMBERSHIP", "organizations/org-1/members/alice"),
+        ("CREATE", "ORGANIZATION_GROUP_MEMBERSHIP", "organizations/org-1/groups/g-robo/members/alice"),
+    ],
+)
+def test_organization_events_resync_that_organization(admin, repo, operation, resource_type, path):
+    consume_event(_event(operation, resource_type, path), admin, repo)
+    admin.get_organization.assert_called_once_with("org-1")
+    repo.soft_delete_stale.assert_called_once()
+
+
+def test_organization_deleted_is_soft_deleted_without_resync(admin, repo):
+    consume_event(_event("DELETE", "ORGANIZATION", "organizations/org-1"), admin, repo)
+    assert repo.soft_delete_organization.call_args.kwargs["id"] == "org-1"
+    admin.get_organization.assert_not_called()
+
+
+def test_user_deleted_removes_their_memberships(admin, repo):
+    consume_event(_event("DELETE", "USER", "users/alice"), admin, repo)
+    assert repo.soft_delete_memberships_by_sub.call_args.kwargs["user_sub"] == "alice"
+
+
+@pytest.mark.parametrize(
+    "event",
+    [
+        _event("CREATE", "CLIENT", "clients/abc"),
+        _event("UPDATE", "USER", "users/alice"),
+        {"type": "LOGIN"},
+        {},
+    ],
+)
+def test_unrelated_events_are_ignored(admin, repo, event):
+    consume_event(event, admin, repo)
+    assert repo.method_calls == []
+    assert admin.method_calls == []
+
+
+@pytest.mark.parametrize(
+    "event",
+    [
+        _event("CREATE", "ORGANIZATION", "something/else"),
+        _event("CREATE", "ORGANIZATION_GROUP", ""),
+        _event("DELETE", "USER", "users"),
+    ],
+)
+def test_malformed_events_raise(admin, repo, event):
     with pytest.raises(SyncError):
-        consume_event(evt, repo)
-
-
-def test_membership_added_optional_group_id():
-    """group_id (groupId) is optional for direct org membership."""
-    repo = _repo()
-    consume_event(
-        _event("ORG_MEMBERSHIP_ADDED", {
-            "userId": "sub-bob",
-            "organizationId": "org-1",
-        }),
-        repo,
-    )
-    kw = repo.upsert_membership.call_args.kwargs
-    assert kw["group_id"] is None
+        consume_event(event, admin, repo)

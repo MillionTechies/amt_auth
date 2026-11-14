@@ -52,7 +52,7 @@ def make_jwt(rsa_private_key):
             "realm_access": {"roles": ["user"]},
             "resource_access": {AUDIENCE: {"roles": ["read"]}},
             "organization": {
-                "org-jkuat-id": {"name": "JKUAT", "roles": ["member"]},
+                "jkuat": {"id": "org-jkuat-id", "groups": ["/clubs/Robotics Club"]},
             },
         }
         if overrides:

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from rest_framework.permissions import BasePermission
 
-ORG_ADMIN_ROLE = "admin"  # role inside an organization
 PLATFORM_ADMIN_ROLE = "admin"  # realm role
 
 
@@ -15,13 +14,16 @@ class IsOrgMember(BasePermission):
 
 
 class IsOrgAdmin(BasePermission):
-    """Allows admins of the organization named by the URL's `organization_id`."""
+    """Allows admins of the organization named by the URL's `organization_id`.
+
+    An organization's admins are the members of its `/admins` group.
+    """
 
     def has_permission(self, request, view) -> bool:
         claims = getattr(request.user, "claims", None)
         org_id = view.kwargs.get("organization_id")
         return claims is not None and any(
-            m.id == org_id and ORG_ADMIN_ROLE in m.roles for m in claims.memberships
+            m.id == org_id and m.is_admin for m in claims.memberships
         )
 
 

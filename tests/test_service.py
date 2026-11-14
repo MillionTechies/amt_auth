@@ -32,7 +32,7 @@ def test_validate_token_propagates_expired(amt_env):
 
 def test_get_active_organization_with_membership(amt_env):
     cfg = load_config(amt_env)
-    mem = OrgMembership(id="u1", name="JKUAT", roles=("member",), groups=())
+    mem = OrgMembership(id="u1", alias="jkuat", groups=())
     claims = MagicMock(spec=TokenClaims)
     claims.active_organization = mem
     svc = AuthService(cfg, validator=MagicMock(), admin=MagicMock())
