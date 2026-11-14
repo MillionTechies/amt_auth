@@ -31,31 +31,31 @@ def test_no_organization_claim():
     payload = {**BASE_PAYLOAD, "organization": {}}
     claims = TokenClaims.from_decoded(payload, "my-client")
     assert claims.memberships == ()
-    assert claims.active_university is None
+    assert claims.active_organization is None
 
 
 def test_absent_organization_key():
     payload = {k: v for k, v in BASE_PAYLOAD.items() if k != "organization"}
     claims = TokenClaims.from_decoded(payload, "my-client")
     assert claims.memberships == ()
-    assert claims.active_university is None
+    assert claims.active_organization is None
 
 
-def test_one_org_active_university():
+def test_one_org_active_organization():
     payload = {
         **BASE_PAYLOAD,
         "organization": {"org-a": {"name": "JKUAT", "roles": ["member"]}},
     }
     claims = TokenClaims.from_decoded(payload, "my-client")
-    assert claims.active_university is not None
-    assert claims.active_university.id == "org-a"
-    assert claims.active_university.name == "JKUAT"
+    assert claims.active_organization is not None
+    assert claims.active_organization.id == "org-a"
+    assert claims.active_organization.name == "JKUAT"
 
 
 def test_two_orgs_active_is_first_in_insertion_order():
     claims = TokenClaims.from_decoded(BASE_PAYLOAD, "my-client")
-    assert claims.active_university is not None
-    assert claims.active_university.id == "org-a"
+    assert claims.active_organization is not None
+    assert claims.active_organization.id == "org-a"
 
 
 def test_membership_roles_parsed():

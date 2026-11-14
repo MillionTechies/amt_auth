@@ -1,4 +1,4 @@
-from amt_auth.core.claims import ClubRef, TokenClaims, UniversityMembership
+from amt_auth.core.claims import GroupRef, TokenClaims, OrgMembership
 from amt_auth.core.config import AMTConfig, get_config, load_config
 from amt_auth.core.service import AuthService
 from amt_auth.core.sync import MirrorRepository, consume_event
@@ -16,14 +16,14 @@ __all__ = [
     "AMTConfig",
     "AdminAPIError",
     "AuthService",
-    "ClubRef",
+    "GroupRef",
     "ConfigError",
     "InvalidTokenError",
     "MirrorRepository",
     "SyncError",
     "TokenClaims",
     "TokenExpiredError",
-    "UniversityMembership",
+    "OrgMembership",
     "consume_event",
     "get_config",
     "load_config",

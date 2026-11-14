@@ -59,18 +59,23 @@ class AdminClient:
     def _auth_headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self._token}"}
 
-    def _get(self, path: str, params: dict | None = None) -> httpx.Response:
+    def _request(self, method: str, path: str, **kwargs) -> httpx.Response:
         self._ensure_token()
         url = f"{self._config.keycloak_url}/admin/realms/{self._config.realm}{path}"
-        response = self._http.get(url, headers=self._auth_headers(), params=params)
+        response = self._http.request(method, url, headers=self._auth_headers(), **kwargs)
         if response.status_code == 401:
             # Token may have been invalidated server-side; refresh once and retry
             self._token = None
             self._fetch_token()
-            response = self._http.get(url, headers=self._auth_headers(), params=params)
+            response = self._http.request(
+                method, url, headers=self._auth_headers(), **kwargs
+            )
         if not response.is_success:
             raise AdminAPIError(response.status_code, response.text)
         return response
+
+    def _get(self, path: str, params: dict | None = None) -> httpx.Response:
+        return self._request("GET", path, params=params)
 
     # ------------------------------------------------------------------
     # Public API
@@ -99,3 +104,34 @@ class AdminClient:
 
     def get_user(self, user_id: str) -> dict:
         return self._get(f"/users/{user_id}").json()
+
+    # ------------------------------------------------------------------
+    # Onboarding — exact request shapes to be verified in Phase D
+    # ------------------------------------------------------------------
+
+    def create_organization(self, name: str, domains: list[str] | None = None) -> str:
+        """Create an organization and return its Keycloak ID."""
+        response = self._request(
+            "POST",
+            "/organizations",
+            json={"name": name, "domains": [{"name": d} for d in domains or []]},
+        )
+        return response.headers["Location"].rstrip("/").rsplit("/", 1)[-1]
+
+    def invite_org_member(
+        self,
+        org_id: str,
+        email: str,
+        first_name: str = "",
+        last_name: str = "",
+    ) -> None:
+        """Email an invitation; the user registers and joins the organization."""
+        self._request(
+            "POST",
+            f"/organizations/{org_id}/members/invite-user",
+            data={"email": email, "firstName": first_name, "lastName": last_name},
+        )
+
+    def add_org_member(self, org_id: str, user_id: str) -> None:
+        """Add an existing Keycloak user to an organization."""
+        self._request("POST", f"/organizations/{org_id}/members", json=user_id)

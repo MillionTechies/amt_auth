@@ -4,18 +4,18 @@ from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
-class ClubRef:
+class GroupRef:
     id: str
     name: str
-    university_id: str
+    organization_id: str
 
 
 @dataclass(frozen=True)
-class UniversityMembership:
+class OrgMembership:
     id: str
     name: str
     roles: tuple[str, ...]
-    clubs: tuple[ClubRef, ...]
+    groups: tuple[GroupRef, ...]
 
 
 @dataclass(frozen=True)
@@ -27,8 +27,8 @@ class TokenClaims:
     family_name: str | None
     realm_roles: frozenset[str]
     client_roles: frozenset[str]
-    memberships: tuple[UniversityMembership, ...]
-    active_university: UniversityMembership | None
+    memberships: tuple[OrgMembership, ...]
+    active_organization: OrgMembership | None
     raw: dict
 
     @classmethod
@@ -49,11 +49,11 @@ class TokenClaims:
         # organization claim: {"<org_id>": {"name": "...", "roles": [...]}}
         org_map: dict = payload.get("organization", {})
         memberships = tuple(
-            UniversityMembership(
+            OrgMembership(
                 id=org_id,
                 name=attrs.get("name", ""),
                 roles=tuple(attrs.get("roles", [])),
-                clubs=(),  # clubs come from org groups; not present in the base token
+                groups=(),  # org groups are not present in the base token
             )
             for org_id, attrs in org_map.items()
         )
@@ -67,6 +67,6 @@ class TokenClaims:
             realm_roles=realm_roles,
             client_roles=client_roles,
             memberships=memberships,
-            active_university=memberships[0] if memberships else None,
+            active_organization=memberships[0] if memberships else None,
             raw=payload,
         )

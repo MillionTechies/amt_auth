@@ -20,14 +20,14 @@ def _event(type_: str, representation: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# University events
+# Organization events
 # ---------------------------------------------------------------------------
 
 def test_org_created():
     repo = _repo()
     consume_event(_event("ORG_CREATED", {"id": "org-1", "name": "JKUAT"}), repo)
-    repo.upsert_university.assert_called_once()
-    kw = repo.upsert_university.call_args.kwargs
+    repo.upsert_organization.assert_called_once()
+    kw = repo.upsert_organization.call_args.kwargs
     assert kw["id"] == "org-1"
     assert kw["name"] == "JKUAT"
 
@@ -35,21 +35,21 @@ def test_org_created():
 def test_org_updated():
     repo = _repo()
     consume_event(_event("ORG_UPDATED", {"id": "org-1", "name": "JKUAT Updated"}), repo)
-    repo.upsert_university.assert_called_once()
-    kw = repo.upsert_university.call_args.kwargs
+    repo.upsert_organization.assert_called_once()
+    kw = repo.upsert_organization.call_args.kwargs
     assert kw["name"] == "JKUAT Updated"
 
 
 def test_org_deleted():
     repo = _repo()
     consume_event(_event("ORG_DELETED", {"id": "org-1"}), repo)
-    repo.soft_delete_university.assert_called_once()
-    kw = repo.soft_delete_university.call_args.kwargs
+    repo.soft_delete_organization.assert_called_once()
+    kw = repo.soft_delete_organization.call_args.kwargs
     assert kw["id"] == "org-1"
 
 
 # ---------------------------------------------------------------------------
-# Club (org group) events
+# Org group events
 # ---------------------------------------------------------------------------
 
 def test_group_created():
@@ -58,10 +58,23 @@ def test_group_created():
         _event("ORG_GROUP_CREATED", {"id": "g-1", "name": "Robotics", "organizationId": "org-1"}),
         repo,
     )
-    repo.upsert_club.assert_called_once()
-    kw = repo.upsert_club.call_args.kwargs
+    repo.upsert_group.assert_called_once()
+    kw = repo.upsert_group.call_args.kwargs
     assert kw["id"] == "g-1"
-    assert kw["university_id"] == "org-1"
+    assert kw["organization_id"] == "org-1"
+    assert kw["parent_id"] is None
+
+
+def test_group_created_with_parent():
+    repo = _repo()
+    consume_event(
+        _event(
+            "ORG_GROUP_CREATED",
+            {"id": "g-1", "name": "Robotics", "organizationId": "org-1", "parentId": "g-clubs"},
+        ),
+        repo,
+    )
+    assert repo.upsert_group.call_args.kwargs["parent_id"] == "g-clubs"
 
 
 def test_group_updated():
@@ -70,14 +83,14 @@ def test_group_updated():
         _event("ORG_GROUP_UPDATED", {"id": "g-1", "name": "Robotics v2", "organizationId": "org-1"}),
         repo,
     )
-    repo.upsert_club.assert_called_once()
+    repo.upsert_group.assert_called_once()
 
 
 def test_group_deleted():
     repo = _repo()
     consume_event(_event("ORG_GROUP_DELETED", {"id": "g-1"}), repo)
-    repo.soft_delete_club.assert_called_once()
-    kw = repo.soft_delete_club.call_args.kwargs
+    repo.soft_delete_group.assert_called_once()
+    kw = repo.soft_delete_group.call_args.kwargs
     assert kw["id"] == "g-1"
 
 
@@ -98,7 +111,7 @@ def test_membership_added():
     repo.upsert_membership.assert_called_once()
     kw = repo.upsert_membership.call_args.kwargs
     assert kw["user_sub"] == "sub-alice"
-    assert kw["university_id"] == "org-1"
+    assert kw["organization_id"] == "org-1"
     assert kw["roles"] == ["member"]
 
 
@@ -128,9 +141,9 @@ def test_user_deleted():
 def test_unknown_event_type_skipped():
     repo = _repo()
     consume_event(_event("SOME_FUTURE_EVENT", {"id": "x"}), repo)
-    repo.upsert_university.assert_not_called()
-    repo.soft_delete_university.assert_not_called()
-    repo.upsert_club.assert_not_called()
+    repo.upsert_organization.assert_not_called()
+    repo.soft_delete_organization.assert_not_called()
+    repo.upsert_group.assert_not_called()
     repo.upsert_membership.assert_not_called()
 
 
@@ -139,7 +152,7 @@ def test_idempotent_double_upsert():
     evt = _event("ORG_CREATED", {"id": "org-1", "name": "JKUAT"})
     consume_event(evt, repo)
     consume_event(evt, repo)
-    assert repo.upsert_university.call_count == 2
+    assert repo.upsert_organization.call_count == 2
 
 
 def test_malformed_payload_raises():
@@ -149,8 +162,8 @@ def test_malformed_payload_raises():
         consume_event(evt, repo)
 
 
-def test_membership_added_optional_club_id():
-    """club_id (groupId) is optional for direct org membership."""
+def test_membership_added_optional_group_id():
+    """group_id (groupId) is optional for direct org membership."""
     repo = _repo()
     consume_event(
         _event("ORG_MEMBERSHIP_ADDED", {
@@ -160,4 +173,4 @@ def test_membership_added_optional_club_id():
         repo,
     )
     kw = repo.upsert_membership.call_args.kwargs
-    assert kw["club_id"] is None
+    assert kw["group_id"] is None

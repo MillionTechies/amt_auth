@@ -11,25 +11,30 @@ logger = logging.getLogger(__name__)
 
 @runtime_checkable
 class MirrorRepository(Protocol):
-    def upsert_university(self, id: str, name: str, synced_at: datetime) -> None: ...
-    def soft_delete_university(self, id: str, synced_at: datetime) -> None: ...
-    def upsert_club(
-        self, id: str, name: str, university_id: str, synced_at: datetime
+    def upsert_organization(self, id: str, name: str, synced_at: datetime) -> None: ...
+    def soft_delete_organization(self, id: str, synced_at: datetime) -> None: ...
+    def upsert_group(
+        self,
+        id: str,
+        name: str,
+        organization_id: str,
+        parent_id: str | None,
+        synced_at: datetime,
     ) -> None: ...
-    def soft_delete_club(self, id: str, synced_at: datetime) -> None: ...
+    def soft_delete_group(self, id: str, synced_at: datetime) -> None: ...
     def upsert_membership(
         self,
         user_sub: str,
-        university_id: str,
-        club_id: str | None,
+        organization_id: str,
+        group_id: str | None,
         roles: list[str],
         synced_at: datetime,
     ) -> None: ...
     def soft_delete_membership(
         self,
         user_sub: str,
-        university_id: str,
-        club_id: str | None,
+        organization_id: str,
+        group_id: str | None,
         synced_at: datetime,
     ) -> None: ...
     def soft_delete_memberships_by_sub(
@@ -54,22 +59,23 @@ def _require(event: dict, *keys: str) -> None:
 def _handle_org_upsert(event: dict, repo: MirrorRepository, synced_at: datetime) -> None:
     _require(event, "id", "name")
     r = event["representation"]
-    repo.upsert_university(id=r["id"], name=r["name"], synced_at=synced_at)
+    repo.upsert_organization(id=r["id"], name=r["name"], synced_at=synced_at)
 
 
 def _handle_org_delete(event: dict, repo: MirrorRepository, synced_at: datetime) -> None:
     _require(event, "id")
     r = event["representation"]
-    repo.soft_delete_university(id=r["id"], synced_at=synced_at)
+    repo.soft_delete_organization(id=r["id"], synced_at=synced_at)
 
 
 def _handle_group_upsert(event: dict, repo: MirrorRepository, synced_at: datetime) -> None:
     _require(event, "id", "name", "organizationId")
     r = event["representation"]
-    repo.upsert_club(
+    repo.upsert_group(
         id=r["id"],
         name=r["name"],
-        university_id=r["organizationId"],
+        organization_id=r["organizationId"],
+        parent_id=r.get("parentId"),
         synced_at=synced_at,
     )
 
@@ -77,7 +83,7 @@ def _handle_group_upsert(event: dict, repo: MirrorRepository, synced_at: datetim
 def _handle_group_delete(event: dict, repo: MirrorRepository, synced_at: datetime) -> None:
     _require(event, "id")
     r = event["representation"]
-    repo.soft_delete_club(id=r["id"], synced_at=synced_at)
+    repo.soft_delete_group(id=r["id"], synced_at=synced_at)
 
 
 def _handle_membership_add(event: dict, repo: MirrorRepository, synced_at: datetime) -> None:
@@ -85,8 +91,8 @@ def _handle_membership_add(event: dict, repo: MirrorRepository, synced_at: datet
     r = event["representation"]
     repo.upsert_membership(
         user_sub=r["userId"],
-        university_id=r["organizationId"],
-        club_id=r.get("groupId"),
+        organization_id=r["organizationId"],
+        group_id=r.get("groupId"),
         roles=r.get("roles", []),
         synced_at=synced_at,
     )
@@ -97,8 +103,8 @@ def _handle_membership_remove(event: dict, repo: MirrorRepository, synced_at: da
     r = event["representation"]
     repo.soft_delete_membership(
         user_sub=r["userId"],
-        university_id=r["organizationId"],
-        club_id=r.get("groupId"),
+        organization_id=r["organizationId"],
+        group_id=r.get("groupId"),
         synced_at=synced_at,
     )
 

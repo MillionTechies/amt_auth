@@ -2,14 +2,34 @@ name: CI
 
 on:
   push:
-    branches: [main, develop]
+    branches: [main, develop, "release/**"]
   pull_request:
-    branches: [main, develop]
+    branches: [main, develop, "release/**"]
 
 permissions:
   contents: read
 
 jobs:
+  branch-policy:
+    name: Branch policy
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check the source branch is allowed into the target
+        env:
+          HEAD: ${{ github.head_ref }}
+          BASE: ${{ github.base_ref }}
+        run: |
+          case "$BASE" in
+            main)    allowed='^release/' ;;
+            develop) allowed='^(feature|release)/' ;;
+            *)       exit 0 ;;
+          esac
+          if [[ ! "$HEAD" =~ $allowed ]]; then
+            echo "::error::'$HEAD' cannot be merged into '$BASE'. main takes release/*; develop takes feature/* (and release/* merged back)."
+            exit 1
+          fi
+
   test:
     name: Tests (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest

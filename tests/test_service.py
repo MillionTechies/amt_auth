@@ -2,7 +2,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from amt_auth.core.claims import TokenClaims, UniversityMembership
+from amt_auth.core.claims import TokenClaims, OrgMembership
 from amt_auth.core.config import load_config
 from amt_auth.core.service import AuthService
 from amt_auth.core.validator import TokenValidator
@@ -30,25 +30,18 @@ def test_validate_token_propagates_expired(amt_env):
         svc.validate_token("any.jwt.token")
 
 
-def test_get_active_university_with_membership(amt_env):
+def test_get_active_organization_with_membership(amt_env):
     cfg = load_config(amt_env)
-    mem = UniversityMembership(id="u1", name="JKUAT", roles=("member",), clubs=())
+    mem = OrgMembership(id="u1", name="JKUAT", roles=("member",), groups=())
     claims = MagicMock(spec=TokenClaims)
-    claims.active_university = mem
+    claims.active_organization = mem
     svc = AuthService(cfg, validator=MagicMock(), admin=MagicMock())
-    assert svc.get_active_university(claims) is mem
+    assert svc.get_active_organization(claims) is mem
 
 
-def test_get_active_university_none(amt_env):
+def test_get_active_organization_none(amt_env):
     cfg = load_config(amt_env)
     claims = MagicMock(spec=TokenClaims)
-    claims.active_university = None
+    claims.active_organization = None
     svc = AuthService(cfg, validator=MagicMock(), admin=MagicMock())
-    assert svc.get_active_university(claims) is None
-
-
-def test_onboard_user_not_implemented(amt_env):
-    cfg = load_config(amt_env)
-    svc = AuthService(cfg, validator=MagicMock(), admin=MagicMock())
-    with pytest.raises(NotImplementedError):
-        svc.onboard_user()
+    assert svc.get_active_organization(claims) is None

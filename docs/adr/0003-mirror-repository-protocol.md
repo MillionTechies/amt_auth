@@ -6,7 +6,7 @@
 
 ## Context
 
-`sync.consume_event` must write to a mirror of University/Club/Membership data. The
+`sync.consume_event` must write to a mirror of Organization/Group/Membership data. The
 concrete implementation (Django ORM models) lives in Phase B's optional `amt-auth[django]`
 extra. The core library must define the contract without importing Django.
 
