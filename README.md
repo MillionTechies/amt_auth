@@ -268,3 +268,9 @@ git push -u origin release/0.2.0
 # open a PR release/0.2.0 -> main, merge, then tag main as v0.2.0
 # open a PR release/0.2.0 -> develop to bring the version bump back
 ```
+
+Pushing the tag publishes that version to [PyPI](https://pypi.org/project/amt-auth/) through `.github/workflows/publish.yml`. The tag must match the version in `pyproject.toml`, and a version can only be published once.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
