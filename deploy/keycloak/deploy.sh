@@ -34,7 +34,14 @@ for arg in "$@"; do
 done
 
 step() { printf '\n==> %s\n' "$*"; }
-env_value() { grep -E "^$1=" .env 2>/dev/null | tail -1 | cut -d= -f2- || true; }
+# The last NAME=value line in .env, without the quotes around the value if it has them.
+env_value() {
+  local value
+  value="$(grep -E "^$1=" .env 2>/dev/null | tail -1 | cut -d= -f2- || true)"
+  value="${value%\"}"; value="${value#\"}"
+  value="${value%\'}"; value="${value#\'}"
+  echo "$value"
+}
 
 [ -f .env ] || { echo ".env is missing: cp .env.example .env and fill it in." >&2; exit 1; }
 

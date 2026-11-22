@@ -91,20 +91,23 @@ upsert_client() {
   echo "$id"
 }
 
+# Check every product before changing anything: a mistyped entry stops the setup
+# (and a deploy), rather than leaving that product's clients quietly out of date.
+invalid=0
+for product in $PRODUCTS; do
+  IFS=, read -r -a sites <<<"${product#*=}"
+  [[ "${product%%=*}" != "$product" ]] || invalid=1
+  for site in "${sites[@]%/}"; do
+    [[ "$site" =~ ^https?://[^/*\"\']+$ ]] || invalid=1
+  done
+  [ "$invalid" = 0 ] || { echo "Invalid product '$product': expected name=https://host[,http://host:port] (no path, no wildcard, no quotes)." >&2; exit 1; }
+done
+
 for product in $PRODUCTS; do
   name="${product%%=*}"
   IFS=, read -r -a sites <<<"${product#*=}"
   sites=("${sites[@]%/}")
   url="${sites[0]}"
-  valid=1
-  [ "$name" != "$product" ] || valid=0
-  for site in "${sites[@]}"; do
-    [[ "$site" =~ ^https?://[^/*]+$ ]] || valid=0
-  done
-  if [ "$valid" = 0 ]; then
-    echo "Skipping '$product': expected name=https://host[,http://host:port] (no path, no wildcard)." >&2
-    continue
-  fi
   redirects="$(printf '"%s/*",' "${sites[@]}")"
   origins="$(printf '"%s",' "${sites[@]}")"
   logouts="$(printf '%s/*##' "${sites[@]}")"
